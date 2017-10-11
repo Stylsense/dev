@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 
-# imports
+# selenium imports
 from selenium import webdriver
 from selenium.common.exceptions import NoSuchElementException
 from selenium.webdriver.common.by import By
@@ -14,6 +14,7 @@ import os
 import os.path
 
 import re #for regular expressions
+import heapq # use priority queue when we move to multithreading model
 
 # relative file paths of output files
 g_urls_csv_file_path = '/MANGO/urls.csv'
@@ -23,14 +24,15 @@ g_blacklist = 'shop.mango.com/us/women/help/'
 
 # global dictionary of all the urls to be visited
 # key = url, value = AA containing status
-g_new_urls = {	
-				'https://shop.mango.com/us/women/shirts-short-sleeve/flowy-textured-blouse_13090453.html' : { }
-		 	 }
+g_new_urls = {
+				'https://shop.mango.com/us/women/shirts-short-sleeve/flowy-textured-blouse_13090453.html' : {'priority' : 0 }
+			 }
 g_processing_urls = {}
 g_processed_urls = {}
+g_new_urls_heapq = [(0, 'https://shop.mango.com/us/women/shirts-short-sleeve/flowy-textured-blouse_13090453.html')]
 
 # IMPORTANT! these columns are the final table columns, edit here when you increase or decrease the columns
-g_urls_column = ['url', 'status', 'outfitUrls', 'uniqueId']
+g_urls_column = ['url', 'priority', 'status', 'outfitUrls', 'uniqueId']
 
 # global dictionary of all fashion products like - top, bottom, dress, accessories etc.
 # key = uniqueId (which is unique within a website), value = other metadata related to the item
@@ -50,10 +52,18 @@ g_items_column = ['uniqueId', 'itemName', 'priceArray', 'color', 'description', 
 #			}
 
 # this function will add a new url to new urls dictionary ONLY if it non empty and not in processing or processed queue 
+# it will also add the url to a min heapq based on its priority
 # @url 
-def addUrlToDictionary(url):
+def addUrlToDictionary(url, aa):
+	# sanitize url, throw away query params
+	queryParam = url.rfind('?')
+	if queryParam != --1:
+		url =  url[:queryParam]
+	
 	if url and url not in g_new_urls and url not in g_processing_urls and url not in g_processed_urls:
-		g_new_urls[url] = {}
+		g_new_urls[url] = aa
+		print('++++++++++++++ pushing at ', str(aa['priority']), url)
+		heapq.heappush(g_new_urls_heapq, (int(aa['priority']), url)) 
 
 # moves a particular url from 'processing' pipeline to 'processed' pipeline when all the links are successfully extracted from it
 # so we donot have to visit it again
@@ -63,35 +73,47 @@ def addUrlToDictionary(url):
 def markUrlAsProcessed(url, uniqueId, outfitUrls=[]):
 	if url and url in g_processing_urls:	
 		# move the url to 'processed' pipeline
-		g_processed_urls[url] = {}
+		aa = g_processing_urls[url]
+		g_processed_urls[url] = aa 
 		g_processed_urls[url]['uniqueId'] = uniqueId
 		g_processed_urls[url]['status'] = 'processed' #maintain the status for CSV 
 		if outfitUrls:
-	 		g_processed_urls[url]['outfitUrls'] = outfitUrls
+			g_processed_urls[url]['outfitUrls'] = outfitUrls
+			for newUrl in outfitUrls:
+				updateOutfitUniqueId(url, newUrl)
 		
 		# remove it from the processing pipeline
 		del g_processing_urls[url]
 
-	# add outfitUrls in the 'new' pipeline
-	for newUrl in outfitUrls:
-		updateOutfitUniqueId(url, newUrl)
-		addUrlToDictionary(newUrl)		
-
-
+# get the next url to process from the min heapq
 # removes a url from the 'new' pipeline and moves it to 'processing' pipeline 
 def getNextUrlToProcess():
-	#TODO: this is not efficient there should be 2 pipelines or may be 3 - new, processing, processed 
-	# and urls should get promoted/moved to the appropriate pipeline
+	url = ''
 
-	if g_new_urls:
-		key, value = g_new_urls.popitem()
-		value['status'] = 'processing'
-		g_processing_urls[key] = value
-		return key
+	if g_new_urls_heapq:
+		tup = heapq.heappop(g_new_urls_heapq)
+		url = tup[1]
+		
+		if g_new_urls and url in g_new_urls:
+			key, value = g_new_urls.popitem()
+			value['status'] = 'processing'
+			g_processing_urls[key] = value
+	else:
+		print('WARNING!! no new urls to process')
+	
+	return url
 
-	print('WARNING!! no new urls to process')
-	return ''
+# return the priority of the url
+def getPriority(url):
+	aa = {}
+	if url in g_new_urls:
+		aa = g_new_urls[url]
+	elif url in g_processing_urls:
+		aa = g_processing_urls[url]
+	elif url in g_processed_urls:
+		aa = g_processed_urls[url]
 
+	return int(aa['priority'])
 
 # check if this url is already processed 
 # @url
@@ -109,15 +131,9 @@ def extractFeatures(url, driver):
 		return True
 
 	try:
-		#find all the links in the page and add them to g_urls
-		allLinks = driver.find_elements_by_tag_name('a')
-		for link in allLinks:
-			href = link.get_attribute('href')
-			if href and href.find(g_domain) != -1 and href.find(g_blacklist) == -1:
-				addUrlToDictionary(href)
-	
-		uniqueIdElem = driver.find_element_by_xpath('//*[@id="Form:SVFichaProducto:panelFicha"]/div[1]/div/div[1]/div[2]')
+		result = False
 
+		uniqueIdElem = driver.find_element_by_xpath('//*[@id="Form:SVFichaProducto:panelFicha"]/div[1]/div/div[1]/div[2]')
 		#extract other features only if the unique id is found	
 		if uniqueIdElem.text.find('REF') != -1:
 			aa = {}
@@ -164,7 +180,9 @@ def extractFeatures(url, driver):
 			links = completeYourOutfit.find_elements_by_tag_name('a')
 			for link in links:
 				if link.is_displayed():
-					outfitUrls.append(link.get_attribute('href'))
+					href = link.get_attribute('href')
+					outfitUrls.append(href)
+					addUrlToDictionary(href, {'priority' : getPriority(url) + 1}) #non outfit urls have priority lower than outfits
 
 			#extract image url
 			imageDiv = driver.find_element_by_xpath('//*[@id="mainDivBody"]/div/div[5]/div[2]')
@@ -181,12 +199,19 @@ def extractFeatures(url, driver):
 			g_items[uniqueId] = aa
 
 			markUrlAsProcessed(url, uniqueId, outfitUrls)	
-			print ('extractFeatures() ', url, ' successfully processed.')
-			return True
+			result = True
 
 		else:
 			print ("WARNING!! uniqueId text does not contain key word REF in url '", url, "'") 
-			return False
+
+		#find all the links in the page and add them to g_urls AFTER the outfit urls have been added so their priority is maintained
+		allLinks = driver.find_elements_by_tag_name('a')
+		for link in allLinks:
+			href = link.get_attribute('href')
+			if href and href.find(g_domain) != -1 and href.find(g_blacklist) == -1:
+				addUrlToDictionary(href, {'priority' : getPriority(url) + 100}) #non outfit urls have priority lower than outfits
+
+		return result 
 	except NoSuchElementException:
 		#mark as processed to prevent infinite loop
 		markUrlAsProcessed(url, 'NO_ITEM_FOUND')	
@@ -202,7 +227,7 @@ def appendOutfitId(itemId, outfitId):
 		g_items[itemId] = itemAA
 
 def updateOutfitUniqueId(url, outfitUrl):
-	print ('updateOutfitUniqueId()', url, outfitUrl)
+#	print ('updateOutfitUniqueId()', url, outfitUrl)
 
 	if url in g_processed_urls and outfitUrl in g_processed_urls:
 		urlAA = g_processed_urls[url]
@@ -215,7 +240,7 @@ def updateOutfitUniqueId(url, outfitUrl):
 
 #load new url
 def loadUrlAndExtractData(url, driver):
-	print ('loadUrlAndExtractData() ', url)
+	print ('loadUrlAndExtractData() ', getPriority(url),  url)
 	# implicit wait will make the webdriver to poll DOM for x seconds when the element
 	# is not available immedietly
 	driver.implicitly_wait(10) # seconds
@@ -225,8 +250,8 @@ def loadUrlAndExtractData(url, driver):
 	try:
 		extractFeatures(url, driver)
 				
-	finally:
-		print('WARNING!! waited 10 seconds to load ', url)
+	except:
+		print('WARNING!! caught exception for', url)
 
 def convertAAtoArray(key, value):
 	aa = {}
@@ -278,7 +303,7 @@ def readCSVToDict(csvFile):
 						if aa['status'] == 'processed':
 							g_processed_urls[value] = aa
 						else:
-							g_new_urls[value] = aa 
+							addUrlToDictionary(value, aa)
 					elif key == 'uniqueId':
 						g_items[value] = dict(row)
 
@@ -318,7 +343,6 @@ def main():
 
 	#TODO: map unique IDs and clean up csv read/write
 
-
 #main function
 #python lets you use the same source file as a reusable module or standalone
 #when python runs it as standalone, it sends __name__ with value "__main__"
@@ -326,7 +350,5 @@ if __name__ == "__main__":
 	try:
 		main()
 	except:
-		print ('Thrown exception,  save session')
+		print ('Thrown exception in main. save session')
 		saveSessionOutput()
-
-
