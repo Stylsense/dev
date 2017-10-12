@@ -41,6 +41,14 @@ g_items = {}
 # IMPORTANT! these columns are the final table columns, edit here when you increase or decrease the columns
 g_items_column = ['uniqueId', 'itemName', 'priceArray', 'color', 'description', 'imageUrls', 'url', 'outfitIds']
 
+# sanitize url, throw away query params
+def sanitizeUrl(url):
+	if url:
+		queryParam = url.rfind('?')
+		if queryParam != -1:
+			url =  url[:queryParam]
+	return url 
+
 # sample row in the table
 #			{
 #				'uniqueId' : '',
@@ -55,11 +63,6 @@ g_items_column = ['uniqueId', 'itemName', 'priceArray', 'color', 'description', 
 # it will also add the url to a min heapq based on its priority
 # @url 
 def addUrlToDictionary(url, aa):
-	# sanitize url, throw away query params
-	queryParam = url.rfind('?')
-	if queryParam != --1:
-		url =  url[:queryParam]
-	
 	if url and url not in g_new_urls and url not in g_processing_urls and url not in g_processed_urls:
 		g_new_urls[url] = aa
 		print('++++++++++++++ pushing at ', str(aa['priority']), url)
@@ -71,7 +74,10 @@ def addUrlToDictionary(url, aa):
 # @uniqueId = uniqueid uniquiely identifies an item. Maintain uniqueID in the url dictionary to look it up in the items dictionary 
 # @outfitUrls = array of urls of items from 'complete your outfit' section. These are needed to collect outfit unique IDs
 def markUrlAsProcessed(url, uniqueId, outfitUrls=[]):
+	print('++++++++++++++ markUrlAsProcessed', url)
 	if url and url in g_processing_urls:	
+
+		print('++++++++++++++ markUrlAsProcessed in processing', url)
 		# move the url to 'processed' pipeline
 		aa = g_processing_urls[url]
 		g_processed_urls[url] = aa 
@@ -79,11 +85,11 @@ def markUrlAsProcessed(url, uniqueId, outfitUrls=[]):
 		g_processed_urls[url]['status'] = 'processed' #maintain the status for CSV 
 		if outfitUrls:
 			g_processed_urls[url]['outfitUrls'] = outfitUrls
-			for newUrl in outfitUrls:
-				updateOutfitUniqueId(url, newUrl)
-		
 		# remove it from the processing pipeline
 		del g_processing_urls[url]
+
+	#by this point, url has already been moved to processed pipeline
+
 
 # get the next url to process from the min heapq
 # removes a url from the 'new' pipeline and moves it to 'processing' pipeline 
@@ -94,10 +100,11 @@ def getNextUrlToProcess():
 		tup = heapq.heappop(g_new_urls_heapq)
 		url = tup[1]
 		
-		if g_new_urls and url in g_new_urls:
-			key, value = g_new_urls.popitem()
-			value['status'] = 'processing'
-			g_processing_urls[key] = value
+		if url in g_new_urls:
+			aa = g_new_urls[url]
+			aa['status'] = 'processing'
+			g_processing_urls[url] = aa
+			del g_new_urls[url]
 	else:
 		print('WARNING!! no new urls to process')
 	
@@ -180,7 +187,7 @@ def extractFeatures(url, driver):
 			links = completeYourOutfit.find_elements_by_tag_name('a')
 			for link in links:
 				if link.is_displayed():
-					href = link.get_attribute('href')
+					href = sanitizeUrl(link.get_attribute('href'))
 					outfitUrls.append(href)
 					addUrlToDictionary(href, {'priority' : getPriority(url) + 1}) #non outfit urls have priority lower than outfits
 
@@ -207,7 +214,7 @@ def extractFeatures(url, driver):
 		#find all the links in the page and add them to g_urls AFTER the outfit urls have been added so their priority is maintained
 		allLinks = driver.find_elements_by_tag_name('a')
 		for link in allLinks:
-			href = link.get_attribute('href')
+			href = sanitizeUrl(link.get_attribute('href'))
 			if href and href.find(g_domain) != -1 and href.find(g_blacklist) == -1:
 				addUrlToDictionary(href, {'priority' : getPriority(url) + 100}) #non outfit urls have priority lower than outfits
 
@@ -227,7 +234,7 @@ def appendOutfitId(itemId, outfitId):
 		g_items[itemId] = itemAA
 
 def updateOutfitUniqueId(url, outfitUrl):
-#	print ('updateOutfitUniqueId()', url, outfitUrl)
+	print ('updateOutfitUniqueId()', url, outfitUrl)
 
 	if url in g_processed_urls and outfitUrl in g_processed_urls:
 		urlAA = g_processed_urls[url]
@@ -312,6 +319,13 @@ def readCSVToDict(csvFile):
 		return
 
 def saveSessionOutput():
+
+	for url in g_processed_urls:
+		outfitUrls = g_processed_urls[url]['outfitUrls']
+		for newUrl in outfitUrls:
+			updateOutfitUniqueId(url, newUrl)
+
+
 	#save the output of this session in csv
 	currentPath = os.getcwd()
 	urlsCSVPath = currentPath + g_urls_csv_file_path 
