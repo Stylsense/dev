@@ -8,6 +8,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
 # imports for file I/O
+import traceback #for exception backtrace 
 from collections import OrderedDict
 import csv
 import os
@@ -21,6 +22,7 @@ g_urls_csv_file_path = '/MANGO/urls.csv'
 g_items_csv_file_path = '/MANGO/items.csv'
 g_domain = 'shop.mango.com/us/women'
 g_blacklist = 'shop.mango.com/us/women/help/'
+g_delimiter = '|'
 
 # global dictionary of all the urls to be visited
 # key = url, value = AA containing status
@@ -65,19 +67,16 @@ def sanitizeUrl(url):
 def addUrlToDictionary(url, aa):
 	if url and url not in g_new_urls and url not in g_processing_urls and url not in g_processed_urls:
 		g_new_urls[url] = aa
-		print('++++++++++++++ pushing at ', str(aa['priority']), url)
+		#print('++++++++++++++ pushing at ', str(aa['priority']), url)
 		heapq.heappush(g_new_urls_heapq, (int(aa['priority']), url)) 
 
 # moves a particular url from 'processing' pipeline to 'processed' pipeline when all the links are successfully extracted from it
 # so we donot have to visit it again
 # @url = url to update
 # @uniqueId = uniqueid uniquiely identifies an item. Maintain uniqueID in the url dictionary to look it up in the items dictionary 
-# @outfitUrls = array of urls of items from 'complete your outfit' section. These are needed to collect outfit unique IDs
-def markUrlAsProcessed(url, uniqueId, outfitUrls=[]):
-	print('++++++++++++++ markUrlAsProcessed', url)
+# @outfitUrls = set of urls of items from 'complete your outfit' section. These are needed to collect outfit unique IDs
+def markUrlAsProcessed(url, uniqueId, outfitUrls):
 	if url and url in g_processing_urls:	
-
-		print('++++++++++++++ markUrlAsProcessed in processing', url)
 		# move the url to 'processed' pipeline
 		aa = g_processing_urls[url]
 		g_processed_urls[url] = aa 
@@ -156,8 +155,8 @@ def extractFeatures(url, driver):
 			aa['priceArray'] = set()
 			#if the string is a number - integer or float
 			for price in priceArray:
-				if re.match("^\d+?\.\d+?$", price): 
-					aa['priceArray'].add(float(price))
+				if re.match("^\d+?\.\d+?$", price) and price: 
+					aa['priceArray'].add(str(price))
 
 			#color
 			hiddenDiv = driver.find_element_by_xpath('//*[@id="Form:SVFichaProducto:panelFicha"]/div[2]')
@@ -179,16 +178,17 @@ def extractFeatures(url, driver):
 				if text != '':
 					strippedDescription.append(text)
 
-			aa['description'] = '|'.join(strippedDescription)
+			aa['description'] = g_delimiter.join(strippedDescription)
 
 			#complete your outfit
-			outfitUrls = []
+			outfitUrls = set()
 			completeYourOutfit = driver.find_element_by_xpath('//*[@id="panelOufitsProducto"]')
 			links = completeYourOutfit.find_elements_by_tag_name('a')
 			for link in links:
 				if link.is_displayed():
 					href = sanitizeUrl(link.get_attribute('href'))
-					outfitUrls.append(href)
+					if href:
+						outfitUrls.add(href)
 					addUrlToDictionary(href, {'priority' : getPriority(url) + 1}) #non outfit urls have priority lower than outfits
 
 			#extract image url
@@ -197,7 +197,9 @@ def extractFeatures(url, driver):
 
 			aa['imageUrls'] = set()
 			for image in images:
-				aa['imageUrls'].add(image.get_attribute('src'))
+				attr = image.get_attribute('src')
+				if attr:
+					aa['imageUrls'].add(attr)
 
 			#set top level url 
 			aa['url'] = url
@@ -221,7 +223,7 @@ def extractFeatures(url, driver):
 		return result 
 	except NoSuchElementException:
 		#mark as processed to prevent infinite loop
-		markUrlAsProcessed(url, 'NO_ITEM_FOUND')	
+		markUrlAsProcessed(url, 'NO_ITEM_FOUND', set())	
 		print ('WARNING!! uniqueId element not found in url ', url)
 		return True
 
@@ -234,8 +236,6 @@ def appendOutfitId(itemId, outfitId):
 		g_items[itemId] = itemAA
 
 def updateOutfitUniqueId(url, outfitUrl):
-	print ('updateOutfitUniqueId()', url, outfitUrl)
-
 	if url in g_processed_urls and outfitUrl in g_processed_urls:
 		urlAA = g_processed_urls[url]
 		outfitUrlAA = g_processed_urls[outfitUrl]
@@ -259,8 +259,10 @@ def loadUrlAndExtractData(url, driver):
 				
 	except:
 		print('WARNING!! caught exception for', url)
+		traceback.print_exc()
 
-def convertAAtoArray(key, value):
+#converts python internal data structure to appropriate format
+def convertAAtoRow(key, value):
 	aa = {}
 	if key.find('http') != -1:
 		aa['url'] = key
@@ -268,8 +270,45 @@ def convertAAtoArray(key, value):
 		aa['uniqueId'] = key
 
 	for k,v in value.items():
+		#convert list to string because csv doesn't support lists
+		if isinstance(v, list) or isinstance(v, set):
+			v = g_delimiter.join(v)
+			
 		aa[k] = v
 	return aa
+
+#CSV writer flattens all data to string, this function will change it back as per the key type
+#TODO: move to a better data marshalling scheme
+def sanitizeCSVRow(row):
+	aa = {} 
+	while row:
+		key, value = row.popitem(False)
+		if key == 'imageUrls' or key == 'priceArray' or key == 'outfitIds' or key == 'outfitUrls':
+			aa[key] = set(value.split(g_delimiter))
+		else:
+			aa[key] = value
+
+	return aa
+
+#converts a csv row which is an ordered dict to python internal data structure
+def convertRowToAA(row):
+	if row:
+		# ecah row is an ordered dictionary
+		# row.popitem(False) will give out the items in FIFO manner, 
+		# which means first item to be popped will be either 'url' or 'uniqueId'
+		key, value = row.popitem(False)
+		aa = sanitizeCSVRow(row) #row now contains rest of the items except the url/uniqueid
+		if key == 'url':
+			url = value
+			# add the urls in processed pipeline
+			if aa['status'] == 'processed':
+				g_processed_urls[url] = aa
+			else:
+				addUrlToDictionary(url, aa)
+		elif key == 'uniqueId':
+			uniqueId = value
+			g_items[uniqueId] = aa 
+
 
 # if the file is not empty then open in append mode
 def appendDictToCSV(csvFile, csvColumns, dictionary):
@@ -277,7 +316,7 @@ def appendDictToCSV(csvFile, csvColumns, dictionary):
 		with open(csvFile, 'a') as csvfile:
 			writer = csv.DictWriter(csvfile, fieldnames=csvColumns)
 			for key, value in dictionary.items():
-				writer.writerow(convertAAtoArray(key, value))
+				writer.writerow(convertAAtoRow(key, value))
 
 	except IOError:
 		print("I/O error({0}): {1}".format(errno, strerror))    
@@ -290,7 +329,7 @@ def writeDictToCSV(csvFile, csvColumns, dictionary):
 			writer = csv.DictWriter(csvfile, fieldnames=csvColumns)
 			writer.writeheader()
 			for key, value in dictionary.items():
-				writer.writerow(convertAAtoArray(key, value))
+				writer.writerow(convertAAtoRow(key, value))
 
 	except IOError:
 		print("I/O error({0}): {1}".format(errno, strerror))    
@@ -302,28 +341,19 @@ def readCSVToDict(csvFile):
 			with open(csvFile) as csvfile:
 				reader = csv.DictReader(csvfile)
 				for row in reader:
-					#csv reader returns ordered dict, if the first item is a url then this is a g_urls dict
-					key, value = row.popitem(False)
-					if key == 'url':
-						aa = dict(row)
-						# add the urls in processed pipeline
-						if aa['status'] == 'processed':
-							g_processed_urls[value] = aa
-						else:
-							addUrlToDictionary(value, aa)
-					elif key == 'uniqueId':
-						g_items[value] = dict(row)
+					convertRowToAA(row)
 
 		except IOError:
 			print("I/O error({0}): {1}".format(errno, strerror))
 		return
 
 def saveSessionOutput():
-
 	for url in g_processed_urls:
-		outfitUrls = g_processed_urls[url]['outfitUrls']
-		for newUrl in outfitUrls:
-			updateOutfitUniqueId(url, newUrl)
+		urlAA = g_processed_urls[url]
+		if 'outfitUrls' in urlAA: 
+			outfitUrls = urlAA['outfitUrls']
+			for newUrl in outfitUrls:
+				updateOutfitUniqueId(url, newUrl)
 
 
 	#save the output of this session in csv
@@ -344,8 +374,8 @@ def main():
 	readCSVToDict(urlsCSVPath)
 	readCSVToDict(itemCSVPath)
 
-#	print ("DEBUG %s " % str (g_urls))
-#	print ("DEBUG %s " % str (g_items))
+	#print ("DEBUG %s " % str (g_new_urls))
+	#print ("DEBUG %s " % str (g_items))
 	url = getNextUrlToProcess()
 
 	while (url != ''):
@@ -365,4 +395,5 @@ if __name__ == "__main__":
 		main()
 	except:
 		print ('Thrown exception in main. save session')
+		traceback.print_exc()
 		saveSessionOutput()
