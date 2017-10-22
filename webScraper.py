@@ -3,9 +3,10 @@
 # selenium imports
 from selenium import webdriver
 from selenium.common.exceptions import NoSuchElementException
+from selenium.common.exceptions import StaleElementReferenceException 
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support import expected_conditions
 
 # imports for file I/O
 import traceback #for exception backtrace 
@@ -16,13 +17,16 @@ import os.path
 
 import re #for regular expressions
 import heapq # use priority queue when we move to multithreading model
+import time
 
 # relative file paths of output files
 g_urls_csv_file_path = '/MANGO/urls.csv'
 g_items_csv_file_path = '/MANGO/items.csv'
+g_item_count_csv_file_path = '/MANGO/itemsCount.csv'
 g_domain = 'shop.mango.com/us/women'
-g_blacklist = 'shop.mango.com/us/women/help/'
+g_blacklist = ['shop.mango.com/us/women/help/', 'shop.mango.com/us/men']
 g_delimiter = '|'
+g_item_count_per_category = {}
 
 # global dictionary of all the urls to be visited
 # key = url, value = AA containing status
@@ -41,7 +45,7 @@ g_urls_column = ['url', 'priority', 'status', 'outfitUrls', 'uniqueId']
 g_items = {}
 
 # IMPORTANT! these columns are the final table columns, edit here when you increase or decrease the columns
-g_items_column = ['uniqueId', 'itemName', 'priceArray', 'color', 'description', 'imageUrls', 'url', 'outfitIds']
+g_items_column = ['uniqueId', 'itemName', 'category', 'priceArray', 'color', 'description', 'imageUrls', 'url', 'outfitIds']
 
 # sanitize url, throw away query params
 def sanitizeUrl(url):
@@ -127,6 +131,23 @@ def getPriority(url):
 def isUrlProcessed(url):
 	return url and url in g_processed_urls
 
+#typically mango urls are https://shop.mango.com/us/women/coats_c67886633 OR https://shop.mango.com/us/women/coats-coats/oversize-wool-coat_11047664.html
+#string after women represents category, more reliable than the one in the webpage
+def extractCetegoryFromUrl(url):
+	result = ''
+	if url:
+		values = url.split('/')
+		if len(values) > 5:
+			result = values[5]
+	return result
+
+#check if the domain matches any of the blacklisted domains
+def isBlacklistedDomain(url):
+	for domain in g_blacklist:
+		if url.find(domain) != -1:
+			return True
+	return False
+
 # specific per retailer MANGO
 # @url to extract the features from
 # @webdriver instance
@@ -148,6 +169,9 @@ def extractFeatures(url, driver):
 			#name of the product
 			itemName = driver.find_element_by_xpath('//*[@id="Form:SVFichaProducto:panelFicha"]/div[1]/div/div[1]/div[1]/h1')
 			aa['itemName'] = itemName.text
+
+			#category of the product
+			aa['category'] = extractCetegoryFromUrl(url)
 
 			#price and revised price
 			price = driver.find_element_by_xpath('//*[@id="Form:SVFichaProducto:panelFicha"]/div[1]/div/div[2]/div')
@@ -187,9 +211,9 @@ def extractFeatures(url, driver):
 			for link in links:
 				if link.is_displayed():
 					href = sanitizeUrl(link.get_attribute('href'))
-					if href:
+					if href and href.find(g_domain) != -1 and not isBlacklistedDomain(href):
 						outfitUrls.add(href)
-					addUrlToDictionary(href, {'priority' : getPriority(url) + 1}) #non outfit urls have priority lower than outfits
+						addUrlToDictionary(href, {'priority' : getPriority(url) + 1}) #non outfit urls have priority lower than outfits
 
 			#extract image url
 			imageDiv = driver.find_element_by_xpath('//*[@id="mainDivBody"]/div/div[5]/div[2]')
@@ -213,18 +237,73 @@ def extractFeatures(url, driver):
 		else:
 			print ("WARNING!! uniqueId text does not contain key word REF in url '", url, "'") 
 
+
 		#find all the links in the page and add them to g_urls AFTER the outfit urls have been added so their priority is maintained
 		allLinks = driver.find_elements_by_tag_name('a')
 		for link in allLinks:
 			href = sanitizeUrl(link.get_attribute('href'))
-			if href and href.find(g_domain) != -1 and href.find(g_blacklist) == -1:
+			if href and href.find(g_domain) != -1 and not isBlacklistedDomain(href):
 				addUrlToDictionary(href, {'priority' : getPriority(url) + 100}) #non outfit urls have priority lower than outfits
 
 		return result 
 	except NoSuchElementException:
 		#mark as processed to prevent infinite loop
-		markUrlAsProcessed(url, 'NO_ITEM_FOUND', set())	
+		#check if this is a catalog page, if so count the number of products
+		button = driver.find_element_by_xpath('//*[@id="navColumns4"]')
+		button.click()
+
+
+		wait_for(link_has_gone_stale, button)
+
+		productCatalog = driver.find_element_by_xpath('//*[@id="productCatalog"]')
+		products = set(productCatalog.find_elements_by_tag_name('a'))
+		loading = True
+		print ('++++++++++', len(products))		
+		while products and loading: 
+			#products get dynamically loaded, so scroll to the bottom of the page#
+			driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")		
+
+			#give couple of seconds to load more items
+			time.sleep(2)
+
+			newProducts = set(productCatalog.find_elements_by_tag_name('a'))
+			print ('++++++++++', len(newProducts))		
+			if newProducts and newProducts.difference(products):
+				products = products.union(newProducts)
+			else: 
+				loading = False
+
+		category = extractCetegoryFromUrl(url)
+		print ('++++++++++ found ', len(products), ' items in category ', category)
+		
+		g_item_count_per_category[category] = len(products)
+		
+
+		#DEBUG for product in products:
+		#DEBUG	print ('+++++++++++', product.get_attribute('title'))
+
+		#markUrlAsProcessed(url, 'NO_ITEM_FOUND', set())	
 		print ('WARNING!! uniqueId element not found in url ', url)
+		return True
+
+def wait_for(condition_function, condition_function_args):
+	start_time = time.time()
+	while time.time() < start_time + 3:
+		if condition_function(condition_function_args):
+			return True
+		else:
+			time.sleep(0.1)
+	raise Exception(
+		'Timeout waiting for {}'.format(condition_function.__name__, condition_function_args.tag_name)
+	)
+
+def link_has_gone_stale(seleniumWebelement):
+	try:
+		# poll the link with an arbitrary call
+		seleniumWebelement.find_elements_by_id('doesnt-matter') 
+		return False
+	except StaleElementReferenceException:
+		print('+++++++++ stale element exception') 
 		return True
 
 def appendOutfitId(itemId, outfitId):
@@ -250,7 +329,7 @@ def loadUrlAndExtractData(url, driver):
 	print ('loadUrlAndExtractData() ', getPriority(url),  url)
 	# implicit wait will make the webdriver to poll DOM for x seconds when the element
 	# is not available immedietly
-	driver.implicitly_wait(10) # seconds
+	driver.implicitly_wait(1) # seconds
 	driver.get(url)
 
 	# wait till product catalog or the unique id is visible //*[@id="productCatalog"]
@@ -360,10 +439,12 @@ def saveSessionOutput():
 	currentPath = os.getcwd()
 	urlsCSVPath = currentPath + g_urls_csv_file_path 
 	itemCSVPath = currentPath + g_items_csv_file_path
+	itemCountCSVPath = currentPath + g_item_count_csv_file_path
 	writeDictToCSV(urlsCSVPath, g_urls_column, g_new_urls)
 	appendDictToCSV(urlsCSVPath, g_urls_column, g_processing_urls)
 	appendDictToCSV(urlsCSVPath, g_urls_column, g_processed_urls)
 	writeDictToCSV(itemCSVPath, g_items_column, g_items)
+	writeDictToCSV(itemCountCSVPath, ['categoty', 'count'], g_item_count_per_category)
 
 def main():
 	currentPath = os.getcwd()
