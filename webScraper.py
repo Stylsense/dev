@@ -9,7 +9,6 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions
 
 # imports for file I/O
-import traceback #for exception backtrace 
 from collections import OrderedDict
 import csv
 import os
@@ -18,6 +17,7 @@ import os.path
 import re #for regular expressions
 import heapq # use priority queue when we move to multithreading model
 import time
+import logging
 
 # relative file paths of output files
 g_urls_csv_file_path = '/MANGO/urls.csv'
@@ -27,6 +27,29 @@ g_domain = 'shop.mango.com/us/women'
 g_blacklist = ['shop.mango.com/us/women/help/', 'shop.mango.com/us/men']
 g_delimiter = '|'
 g_item_count_per_category = {}
+g_logger_file_path = '/session-logs/' #prefix with date
+loggerFilePath = os.getcwd()+ g_logger_file_path + time.strftime('%m-%d-%y') + '.log'  
+
+#create a logger for webscraper
+g_logger = logging.getLogger('webscraper')
+g_logger.setLevel(logging.DEBUG)
+
+#create file handler which logs even debug messages
+fh = logging.FileHandler(loggerFilePath)
+fh.setLevel(logging.DEBUG)
+
+#create console handler with same log level
+ch = logging.StreamHandler()
+ch.setLevel(logging.DEBUG)
+
+#create a formatter and add it to the handlers
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+fh.setFormatter(formatter)
+ch.setFormatter(formatter)
+
+# add the handlers to the logger
+g_logger.addHandler(fh)
+g_logger.addHandler(ch)
 
 # global dictionary of all the urls to be visited
 # key = url, value = AA containing status
@@ -46,6 +69,9 @@ g_items = {}
 
 # IMPORTANT! these columns are the final table columns, edit here when you increase or decrease the columns
 g_items_column = ['uniqueId', 'itemName', 'category', 'priceArray', 'color', 'description', 'imageUrls', 'url', 'outfitIds']
+
+
+
 
 # sanitize url, throw away query params
 def sanitizeUrl(url):
@@ -71,7 +97,7 @@ def sanitizeUrl(url):
 def addUrlToDictionary(url, aa):
 	if url and url not in g_new_urls and url not in g_processing_urls and url not in g_processed_urls:
 		g_new_urls[url] = aa
-		#print('++++++++++++++ pushing at ', str(aa['priority']), url)
+		#g_logger.debug('++++++++++++++ pushing at ', str(aa['priority']), url)
 		heapq.heappush(g_new_urls_heapq, (int(aa['priority']), url)) 
 
 # moves a particular url from 'processing' pipeline to 'processed' pipeline when all the links are successfully extracted from it
@@ -109,7 +135,7 @@ def getNextUrlToProcess():
 			g_processing_urls[url] = aa
 			del g_new_urls[url]
 	else:
-		print('WARNING!! no new urls to process')
+		g_logger.warning('no new urls to process')
 	
 	return url
 
@@ -154,7 +180,7 @@ def isBlacklistedDomain(url):
 def extractFeatures(url, driver):
 	
 	if isUrlProcessed(url):
-		print ('extractFeatures() ', url, ' already processed. Returning immedietly.')
+		g_logger.debug('extractFeatures() %s already processed. Returning immedietly.', url)
 		return True
 
 	try:
@@ -228,14 +254,14 @@ def extractFeatures(url, driver):
 			#set top level url 
 			aa['url'] = url
 			
-			#print ("DEBUG %s " % str (aa))
+			#g_logger.debug("%s " % str (aa))
 			g_items[uniqueId] = aa
 
 			markUrlAsProcessed(url, uniqueId, outfitUrls)	
 			result = True
 
 		else:
-			print ("WARNING!! uniqueId text does not contain key word REF in url '", url, "'") 
+			g_logger.warning('uniqueId text does not contain key word REF in url %s', url) 
 
 
 		#find all the links in the page and add them to g_urls AFTER the outfit urls have been added so their priority is maintained
@@ -258,7 +284,6 @@ def extractFeatures(url, driver):
 		productCatalog = driver.find_element_by_xpath('//*[@id="productCatalog"]')
 		products = set(productCatalog.find_elements_by_tag_name('a'))
 		loading = True
-		print ('++++++++++', len(products))		
 		while products and loading: 
 			#products get dynamically loaded, so scroll to the bottom of the page#
 			driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")		
@@ -267,23 +292,21 @@ def extractFeatures(url, driver):
 			time.sleep(2)
 
 			newProducts = set(productCatalog.find_elements_by_tag_name('a'))
-			print ('++++++++++', len(newProducts))		
 			if newProducts and newProducts.difference(products):
 				products = products.union(newProducts)
 			else: 
 				loading = False
 
 		category = extractCetegoryFromUrl(url)
-		print ('++++++++++ found ', len(products), ' items in category ', category)
+		g_logger.debug('found %d items in category %s', len(products), category)
 		
-		g_item_count_per_category[category] = len(products)
+		g_item_count_per_category[category] = {'count' : len(products)}
 		
-
 		#DEBUG for product in products:
 		#DEBUG	print ('+++++++++++', product.get_attribute('title'))
 
-		#markUrlAsProcessed(url, 'NO_ITEM_FOUND', set())	
-		print ('WARNING!! uniqueId element not found in url ', url)
+		markUrlAsProcessed(url, 'NO_ITEM_FOUND', set())	
+		g_logger.warning('uniqueId element not found in url %s', url)
 		return True
 
 def wait_for(condition_function, condition_function_args):
@@ -303,7 +326,7 @@ def link_has_gone_stale(seleniumWebelement):
 		seleniumWebelement.find_elements_by_id('doesnt-matter') 
 		return False
 	except StaleElementReferenceException:
-		print('+++++++++ stale element exception') 
+		g_logger.exception('stale element exception') 
 		return True
 
 def appendOutfitId(itemId, outfitId):
@@ -326,7 +349,7 @@ def updateOutfitUniqueId(url, outfitUrl):
 
 #load new url
 def loadUrlAndExtractData(url, driver):
-	print ('loadUrlAndExtractData() ', getPriority(url),  url)
+	g_logger.debug('loadUrlAndExtractData() %d, %s', getPriority(url),  url)
 	# implicit wait will make the webdriver to poll DOM for x seconds when the element
 	# is not available immedietly
 	driver.implicitly_wait(1) # seconds
@@ -337,16 +360,17 @@ def loadUrlAndExtractData(url, driver):
 		extractFeatures(url, driver)
 				
 	except:
-		print('WARNING!! caught exception for', url)
-		traceback.print_exc()
+		g_logger.exception('caught exception for %s', url)
 
 #converts python internal data structure to appropriate format
 def convertAAtoRow(key, value):
 	aa = {}
 	if key.find('http') != -1:
 		aa['url'] = key
-	else:
+	elif key.find('REF') != -1:
 		aa['uniqueId'] = key
+	else:
+		aa['category'] = key
 
 	for k,v in value.items():
 		#convert list to string because csv doesn't support lists
@@ -387,6 +411,9 @@ def convertRowToAA(row):
 		elif key == 'uniqueId':
 			uniqueId = value
 			g_items[uniqueId] = aa 
+		elif key == 'category':
+			category = value
+			g_item_count_per_category[category] = aa 
 
 
 # if the file is not empty then open in append mode
@@ -398,7 +425,7 @@ def appendDictToCSV(csvFile, csvColumns, dictionary):
 				writer.writerow(convertAAtoRow(key, value))
 
 	except IOError:
-		print("I/O error({0}): {1}".format(errno, strerror))    
+		g_logger.error("I/O error({0}): {1}".format(errno, strerror))    
 
 
 # if the file is empty then open in write mode and write header
@@ -411,7 +438,7 @@ def writeDictToCSV(csvFile, csvColumns, dictionary):
 				writer.writerow(convertAAtoRow(key, value))
 
 	except IOError:
-		print("I/O error({0}): {1}".format(errno, strerror))    
+		g_logger.error("I/O error({0}): {1}".format(errno, strerror))    
 
 
 def readCSVToDict(csvFile):
@@ -423,10 +450,11 @@ def readCSVToDict(csvFile):
 					convertRowToAA(row)
 
 		except IOError:
-			print("I/O error({0}): {1}".format(errno, strerror))
+			g_logger.error("I/O error({0}): {1}".format(errno, strerror))
 		return
 
 def saveSessionOutput():
+	g_logger.debug('Save session')
 	for url in g_processed_urls:
 		urlAA = g_processed_urls[url]
 		if 'outfitUrls' in urlAA: 
@@ -444,16 +472,19 @@ def saveSessionOutput():
 	appendDictToCSV(urlsCSVPath, g_urls_column, g_processing_urls)
 	appendDictToCSV(urlsCSVPath, g_urls_column, g_processed_urls)
 	writeDictToCSV(itemCSVPath, g_items_column, g_items)
-	writeDictToCSV(itemCountCSVPath, ['categoty', 'count'], g_item_count_per_category)
+	writeDictToCSV(itemCountCSVPath, ['category', 'count'], g_item_count_per_category)
 
 def main():
 	currentPath = os.getcwd()
 	urlsCSVPath = currentPath + g_urls_csv_file_path 
 	itemCSVPath = currentPath + g_items_csv_file_path
-	
+	itemCountCSVPath = currentPath + g_item_count_csv_file_path
+
+
 	#load the csv as dictionary	
 	readCSVToDict(urlsCSVPath)
 	readCSVToDict(itemCSVPath)
+	readCSVToDict(itemCountCSVPath)
 
 	#print ("DEBUG %s " % str (g_new_urls))
 	#print ("DEBUG %s " % str (g_items))
@@ -465,7 +496,6 @@ def main():
 		driver.quit()
 		url = getNextUrlToProcess()
 
-
 	#TODO: map unique IDs and clean up csv read/write
 
 #main function
@@ -474,7 +504,8 @@ def main():
 if __name__ == "__main__":
 	try:
 		main()
+		g_logger.debug('Program finished without any exception. Save session')
+		saveSessionOutput()
 	except:
-		print ('Thrown exception in main. save session')
-		traceback.print_exc()
+		g_logger.exception('Thrown exception in main. Save session')
 		saveSessionOutput()
