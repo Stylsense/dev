@@ -352,7 +352,7 @@ def loadUrlAndExtractData(url, driver):
 	g_logger.debug('loadUrlAndExtractData() %d, %s', getPriority(url),  url)
 	# implicit wait will make the webdriver to poll DOM for x seconds when the element
 	# is not available immedietly
-	driver.implicitly_wait(1) # seconds
+	driver.implicitly_wait(7) # seconds
 	driver.get(url)
 
 	# wait till product catalog or the unique id is visible //*[@id="productCatalog"]
@@ -489,12 +489,17 @@ def main():
 	#print ("DEBUG %s " % str (g_new_urls))
 	#print ("DEBUG %s " % str (g_items))
 	url = getNextUrlToProcess()
-
+	
+	count = 1
 	while (url != ''):
 		driver = webdriver.PhantomJS()
 		loadUrlAndExtractData(url, driver)
 		driver.quit()
 		url = getNextUrlToProcess()
+		count += 1
+		if count > 20:
+			count = 0
+			saveSessionOutput()
 
 	#TODO: map unique IDs and clean up csv read/write
 
