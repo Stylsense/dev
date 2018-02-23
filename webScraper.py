@@ -18,6 +18,8 @@ import re #for regular expressions
 import heapq # use priority queue when we move to multithreading model
 import time
 import logging
+import uuid
+
 
 # relative file paths of output files
 g_urls_csv_file_path = '/MANGO/urls.csv'
@@ -54,11 +56,11 @@ g_logger.addHandler(ch)
 # global dictionary of all the urls to be visited
 # key = url, value = AA containing status
 g_new_urls = {
-				'https://shop.mango.com/us/women/shirts-short-sleeve/flowy-textured-blouse_13090453.html' : {'priority' : 0 }
+				'https://shop.mango.com/us/women/dresses-midi/double-breasted-dress_21033666.html' : {'priority' : 0} 
 			 }
 g_processing_urls = {}
 g_processed_urls = {}
-g_new_urls_heapq = [(0, 'https://shop.mango.com/us/women/shirts-short-sleeve/flowy-textured-blouse_13090453.html')]
+g_new_urls_heapq = [(0, 'https://shop.mango.com/us/women/dresses-midi/double-breasted-dress_21033666.html')]
 
 # IMPORTANT! these columns are the final table columns, edit here when you increase or decrease the columns
 g_urls_column = ['url', 'priority', 'status', 'outfitUrls', 'uniqueId']
@@ -185,22 +187,21 @@ def extractFeatures(url, driver):
 
 	try:
 		result = False
-
-		uniqueIdElem = driver.find_element_by_xpath('//*[@id="Form:SVFichaProducto:panelFicha"]/div[1]/div/div[1]/div[2]')
+		uniqueIdElem = driver.find_element_by_xpath("//*[@id='Form:SVFichaProducto:panelFicha']/div[1]/div/div[1]/div[2]")
 		#extract other features only if the unique id is found	
 		if uniqueIdElem.text.find('REF') != -1:
 			aa = {}
 			uniqueId = uniqueIdElem.text
 
 			#name of the product
-			itemName = driver.find_element_by_xpath('//*[@id="Form:SVFichaProducto:panelFicha"]/div[1]/div/div[1]/div[1]/h1')
+			itemName = driver.find_element_by_xpath("//*[@id='Form:SVFichaProducto:panelFicha']/div[1]/div/div[1]/div[1]/h1")
 			aa['itemName'] = itemName.text
 
 			#category of the product
 			aa['category'] = extractCetegoryFromUrl(url)
 
 			#price and revised price
-			price = driver.find_element_by_xpath('//*[@id="Form:SVFichaProducto:panelFicha"]/div[1]/div/div[2]/div')
+			price = driver.find_element_by_xpath("//*[@id='Form:SVFichaProducto:panelFicha']/div[1]/div/div[2]/div")
 			priceArray = re.split('\$|\n', price.text)
 			aa['priceArray'] = set()
 			#if the string is a number - integer or float
@@ -209,7 +210,7 @@ def extractFeatures(url, driver):
 					aa['priceArray'].add(str(price))
 
 			#color
-			hiddenDiv = driver.find_element_by_xpath('//*[@id="Form:SVFichaProducto:panelFicha"]/div[2]')
+			hiddenDiv = driver.find_element_by_xpath("//*[@id='Form:SVFichaProducto:panelFicha']/div[2]")
 			color = hiddenDiv.get_attribute('textContent')
 			color = color.strip('\t\n') #strip unwated characters
 			colorArray = color.split(':')
@@ -218,7 +219,7 @@ def extractFeatures(url, driver):
 			#TODO : get the alternate color also
 			
 			#description & material and washing instructions
-			hiddenDiv = driver.find_element_by_xpath('//*[@id="Form:SVFichaProducto:panelFicha"]/div[7]')
+			hiddenDiv = driver.find_element_by_xpath("//*[@id='Form:SVFichaProducto:panelFicha']/div[7]")
 			description = hiddenDiv.get_attribute('textContent')
 			description = description.strip('\t\n') 
 			descriptionArray = description.split('\n')
@@ -232,7 +233,7 @@ def extractFeatures(url, driver):
 
 			#complete your outfit
 			outfitUrls = set()
-			completeYourOutfit = driver.find_element_by_xpath('//*[@id="panelOufitsProducto"]')
+			completeYourOutfit = driver.find_element_by_xpath("//*[@id='panelOufitsProducto']")
 			links = completeYourOutfit.find_elements_by_tag_name('a')
 			for link in links:
 				if link.is_displayed():
@@ -242,7 +243,7 @@ def extractFeatures(url, driver):
 						addUrlToDictionary(href, {'priority' : getPriority(url) + 1}) #non outfit urls have priority lower than outfits
 
 			#extract image url
-			imageDiv = driver.find_element_by_xpath('//*[@id="mainDivBody"]/div/div[5]/div[2]')
+			imageDiv = driver.find_element_by_xpath("//*[@id='mainDivBody']/div/div[5]/div[2]")
 			images = imageDiv.find_elements_by_tag_name('img')
 
 			aa['imageUrls'] = set()
@@ -273,15 +274,17 @@ def extractFeatures(url, driver):
 
 		return result 
 	except NoSuchElementException:
+
+		filename = 'FAILEDPAGES/' + str(uuid.uuid4()) + '.png'
+		driver.save_screenshot(filename)
 		#mark as processed to prevent infinite loop
 		#check if this is a catalog page, if so count the number of products
-		button = driver.find_element_by_xpath('//*[@id="navColumns4"]')
+		button = driver.find_element_by_xpath("//*[@id='navColumns4']")
 		button.click()
-
 
 		wait_for(link_has_gone_stale, button)
 
-		productCatalog = driver.find_element_by_xpath('//*[@id="productCatalog"]')
+		productCatalog = driver.find_element_by_xpath("//*[@id='productCatalog']")
 		products = set(productCatalog.find_elements_by_tag_name('a'))
 		loading = True
 		while products and loading: 
@@ -361,6 +364,7 @@ def loadUrlAndExtractData(url, driver):
 				
 	except:
 		g_logger.exception('caught exception for %s', url)
+
 
 #converts python internal data structure to appropriate format
 def convertAAtoRow(key, value):
