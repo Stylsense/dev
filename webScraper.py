@@ -2,23 +2,23 @@
 
 # selenium imports
 from selenium import webdriver
-from selenium.common.exceptions import NoSuchElementException
+from selenium.common.exceptions import TimeoutException 
 from selenium.common.exceptions import StaleElementReferenceException 
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.keys import Keys  
+from urllib.parse import urlparse
 
 # imports for file I/O
 from collections import OrderedDict
 import csv
 import os
 import os.path
-
 import re #for regular expressions
 import heapq # use priority queue when we move to multithreading model
 import time
 import logging
-import uuid
 
 
 # relative file paths of output files
@@ -73,6 +73,12 @@ g_items = {}
 g_items_column = ['uniqueId', 'itemName', 'category', 'priceArray', 'color', 'description', 'imageUrls', 'url', 'outfitIds']
 
 
+
+def addMultipleUrlsToDictionary(url, anchorList):
+	for link in anchorList:
+		href = sanitizeUrl(link.get_attribute('href'))
+		if href and href.find(g_domain) != -1 and not isBlacklistedDomain(href):
+			addUrlToDictionary(href, {'priority' : getPriority(url) + 100}) #non outfit urls have priority lower than outfits
 
 
 # sanitize url, throw away query params
@@ -187,7 +193,9 @@ def extractFeatures(url, driver):
 
 	try:
 		result = False
-		uniqueIdElem = driver.find_element_by_xpath("//*[@id='Form:SVFichaProducto:panelFicha']/div[1]/div/div[1]/div[2]")
+		wait = WebDriverWait(driver, 10)
+		uniqueIdElem = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "div.referenciaProducto.row-fluid")))
+		#uniqueIdElem = driver.find_element_by_xpath('//*[@id="Form:SVFichaProducto:panelFicha"]/div[1]/div/div[1]/div[2]')
 		#extract other features only if the unique id is found	
 		if uniqueIdElem.text.find('REF') != -1:
 			aa = {}
@@ -267,26 +275,30 @@ def extractFeatures(url, driver):
 
 		#find all the links in the page and add them to g_urls AFTER the outfit urls have been added so their priority is maintained
 		allLinks = driver.find_elements_by_tag_name('a')
-		for link in allLinks:
-			href = sanitizeUrl(link.get_attribute('href'))
-			if href and href.find(g_domain) != -1 and not isBlacklistedDomain(href):
-				addUrlToDictionary(href, {'priority' : getPriority(url) + 100}) #non outfit urls have priority lower than outfits
+		addMultipleUrlsToDictionary(url, allLinks)
+		return result
 
-		return result 
-	except NoSuchElementException:
+	except:
+		#uniqe ID was not found on page, check if this is a product catalog page
+		g_logger.warning('uniqueId element not found in url %s', url)
+		take_screenshot(url, driver)
+		markUrlAsProcessed(url, 'NO_ITEM_FOUND', set())	
 
-		filename = 'FAILEDPAGES/' + str(uuid.uuid4()) + '.png'
-		driver.save_screenshot(filename)
+		button = driver.find_element_by_css_selector("#navColumns4")
+		# wait till product catalog or the unique id is visible //*[@id="productCatalog"]
 		#mark as processed to prevent infinite loop
 		#check if this is a catalog page, if so count the number of products
-		button = driver.find_element_by_xpath("//*[@id='navColumns4']")
+		#button = driver.find_element_by_xpath("//*[@id='navColumns4']")
 		button.click()
-
-		wait_for(link_has_gone_stale, button)
+		driver.implicitly_wait(7) # seconds
+		#wait_for(link_has_gone_stale, button)
 
 		productCatalog = driver.find_element_by_xpath("//*[@id='productCatalog']")
 		products = set(productCatalog.find_elements_by_tag_name('a'))
 		loading = True
+		if products:
+			addMultipleUrlsToDictionary(url, products)
+
 		while products and loading: 
 			#products get dynamically loaded, so scroll to the bottom of the page#
 			driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")		
@@ -296,21 +308,25 @@ def extractFeatures(url, driver):
 
 			newProducts = set(productCatalog.find_elements_by_tag_name('a'))
 			if newProducts and newProducts.difference(products):
+				addMultipleUrlsToDictionary(url, newProducts.difference(products))
 				products = products.union(newProducts)
 			else: 
 				loading = False
 
 		category = extractCetegoryFromUrl(url)
 		g_logger.debug('found %d items in category %s', len(products), category)
-		
 		g_item_count_per_category[category] = {'count' : len(products)}
-		
-		#DEBUG for product in products:
-		#DEBUG	print ('+++++++++++', product.get_attribute('title'))
 
-		markUrlAsProcessed(url, 'NO_ITEM_FOUND', set())	
-		g_logger.warning('uniqueId element not found in url %s', url)
-		return True
+
+
+
+
+def take_screenshot(url, driver):
+	o = urlparse(url)
+	path = o.path.replace('/', '_')
+	filename = 'FAILEDPAGES/' + path + '.png'
+	driver.save_screenshot(filename)
+
 
 def wait_for(condition_function, condition_function_args):
 	start_time = time.time()
@@ -355,15 +371,9 @@ def loadUrlAndExtractData(url, driver):
 	g_logger.debug('loadUrlAndExtractData() %d, %s', getPriority(url),  url)
 	# implicit wait will make the webdriver to poll DOM for x seconds when the element
 	# is not available immedietly
-	driver.implicitly_wait(7) # seconds
+	#driver.implicitly_wait(7) # seconds
 	driver.get(url)
-
-	# wait till product catalog or the unique id is visible //*[@id="productCatalog"]
-	try:
-		extractFeatures(url, driver)
-				
-	except:
-		g_logger.exception('caught exception for %s', url)
+	extractFeatures(url, driver)
 
 
 #converts python internal data structure to appropriate format
@@ -493,28 +503,36 @@ def main():
 	#print ("DEBUG %s " % str (g_new_urls))
 	#print ("DEBUG %s " % str (g_items))
 	url = getNextUrlToProcess()
-	
+	chrome_options = webdriver.ChromeOptions()  
+	chrome_options.add_argument("--headless")  
+	chrome_options.add_argument("--window-size=1920,1080");
+	chrome_options.binary_location = '/usr/bin/google-chrome-stable'    
+	driver = webdriver.Chrome(executable_path=os.path.abspath('/usr/local/bin/chromedriver'), chrome_options=chrome_options)
+
 	count = 1
 	while (url != ''):
-		driver = webdriver.PhantomJS()
-		loadUrlAndExtractData(url, driver)
-		driver.quit()
-		url = getNextUrlToProcess()
-		count += 1
-		if count > 20:
-			count = 0
-			saveSessionOutput()
+		try:
+			loadUrlAndExtractData(url, driver)
+			url = getNextUrlToProcess()
+			count += 1
+			if count > 20:
+				count = 0
+				saveSessionOutput()
+		except:
+			g_logger.exception('caught exception for %s, restart driver session', url)
+			driver.quit()
+			driver = webdriver.Chrome(executable_path=os.path.abspath('/usr/local/bin/chromedriver'), chrome_options=chrome_options)
 
-	#TODO: map unique IDs and clean up csv read/write
 
 #main function
 #python lets you use the same source file as a reusable module or standalone
 #when python runs it as standalone, it sends __name__ with value "__main__"
 if __name__ == "__main__":
+	
 	try:
 		main()
 		g_logger.debug('Program finished without any exception. Save session')
 		saveSessionOutput()
 	except:
-		g_logger.exception('Thrown exception in main. Save session')
+		#keyboard interrupt
 		saveSessionOutput()
