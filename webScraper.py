@@ -26,7 +26,7 @@ g_urls_csv_file_path = '/MANGO/urls.csv'
 g_items_csv_file_path = '/MANGO/items.csv'
 g_item_count_csv_file_path = '/MANGO/itemsCount.csv'
 g_domain = 'shop.mango.com/us/women'
-g_blacklist = ['shop.mango.com/us/women/help/', 'shop.mango.com/us/men']
+g_blacklist = ['shop.mango.com/us/women/help/', 'shop.mango.com/us/men', 'javascript:window.open']
 g_delimiter = '|'
 g_item_count_per_category = {}
 g_logger_file_path = '/session-logs/' #prefix with date
@@ -56,11 +56,11 @@ g_logger.addHandler(ch)
 # global dictionary of all the urls to be visited
 # key = url, value = AA containing status
 g_new_urls = {
-				'https://shop.mango.com/us/women/dresses-midi/double-breasted-dress_21033666.html' : {'priority' : 0} 
+				'https://shop.mango.com/us/women/shirts-tops/cotton-linen-peplum-top_81049029.html' : {'priority' : 0} 
 			 }
 g_processing_urls = {}
 g_processed_urls = {}
-g_new_urls_heapq = [(0, 'https://shop.mango.com/us/women/dresses-midi/double-breasted-dress_21033666.html')]
+g_new_urls_heapq = [(0, 'https://shop.mango.com/us/women/shirts-tops/cotton-linen-peplum-top_81049029.html')]
 
 # IMPORTANT! these columns are the final table columns, edit here when you increase or decrease the columns
 g_urls_column = ['url', 'priority', 'status', 'outfitUrls', 'uniqueId']
@@ -241,13 +241,15 @@ def extractFeatures(url, driver):
 
 			#complete your outfit
 			outfitUrls = set()
-			completeYourOutfit = driver.find_element_by_xpath("//*[@id='panelOufitsProducto']")
+			completeYourOutfit = driver.find_element_by_css_selector("div.look.completa_look.accordion-body.in.collapse.span12")
+			#completeYourOutfit = driver.find_element_by_xpath("//*[@id='outfit_08']")
 			links = completeYourOutfit.find_elements_by_tag_name('a')
 			for link in links:
 				if link.is_displayed():
 					href = sanitizeUrl(link.get_attribute('href'))
 					if href and href.find(g_domain) != -1 and not isBlacklistedDomain(href):
 						outfitUrls.add(href)
+						print ('++++++++++++++', href)
 						addUrlToDictionary(href, {'priority' : getPriority(url) + 1}) #non outfit urls have priority lower than outfits
 
 			#extract image url
@@ -349,7 +351,7 @@ def link_has_gone_stale(seleniumWebelement):
 		return True
 
 def appendOutfitId(itemId, outfitId):
-	if itemId and outfitId and itemId in g_items:
+	if itemId in g_items:
 		itemAA = g_items[itemId]
 		if 'outfitIds' not in itemAA:
 			itemAA['outfitIds'] = set()
