@@ -78,6 +78,47 @@ g_categories = set([
 'coats',
 'skirts'])
 
+#uniqueId     itemName    category    priceArray    color    description    imageUrls    url    outfitIds    fabric    sleeve    neckline    lapels    cuffs    detail    design    texture    finish    clasp    closure    button    strap    effect    seams    collar  match-uniqueId    match-itemName    match-category    match-priceArray match-color    match-description    match-imageUrls    match-url    match-fabric    match-sleeve    match-neckline    match-lapels    match-cuffs    match-detail    match-design    match-texture    match-finish    match-clasp    match-closure    match-button    match-strap    match-effect    match-seams    match-collar
+
+g_transaction_column = ['uniqueId','itemName','category','priceArray','color','description','imageUrls','url','outfitIds','fabric','sleeve','neckline','lapels','cuffs','detail','design','texture','finish','clasp','closure','button','strap','effect','seams','collar']
+
+g_transaction_column_match = ['match-uniqueId','match-itemName','match-category','match-priceArray','match-color','match-description','match-imageUrls','match-url','match-outfitIds','match-fabric','match-sleeve','match-neckline','match-lapels','match-cuffs','match-detail','match-design','match-texture','match-finish','match-clasp','match-closure','match-button','match-strap','match-effect','match-seams','match-collar']
+
+#return a list of transactions 
+def expandOutfitIds():
+    transactions = []
+    fullColumns = list(g_transaction_column)
+    fullColumns.extend(g_transaction_column_match)
+    transactions.append(fullColumns)
+
+    for item in g_items:
+        for matchItem in g_items[item]['outfitIds']:
+            if matchItem in g_items:
+                aa = convertAAtoRow(item, g_items[item])
+                transaction = dictionaryToList(aa, g_transaction_column)
+
+                aa = convertAAtoRow(matchItem, g_items[matchItem])
+                transaction.extend(dictionaryToList(aa, g_transaction_column))
+                #print('++++++++', transaction)
+                transactions.append(transaction)
+    
+    return transactions
+
+#maintain the sequence
+def dictionaryToList(dictionary, columnNameList, prefix=''):
+    fullDict = {}
+    print ("DEBUG %s " % str (dictionary))
+    print ('+++++++', columnNameList)
+    for columnName in columnNameList:
+        if columnName in dictionary:
+            fullDict[columnName] = prefix + dictionary[columnName]
+        else:
+            fullDict[columnName] = 'null'
+
+    print('++++++', list(fullDict.values()))
+    return list(fullDict.values())
+
+
 def splitDescription(descriptionBlob, pattern):
     aa = {}
     if descriptionBlob and pattern:
@@ -157,6 +198,15 @@ def writeDictToCSV(csvFile, csvColumns, dictionary):
     except IOError:
         g_logger.error("I/O error({0}): {1}".format(errno, strerror))    
 
+def writeListToCSV(csvFile, listInput):
+    try:
+        with open(csvFile, 'w') as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerows(listInput)
+            
+    except IOError:
+        g_logger.error("I/O error({0}): {1}".format(errno, strerror))    
+
 def main():
     currentPath = os.getcwd()
     itemCSVPath = currentPath + g_items_csv_file_path
@@ -174,6 +224,9 @@ if __name__ == "__main__":
         g_items_column = g_items_column + g_feature_column
         print ('++++++++++++++++', g_items_column)
         writeDictToCSV(os.getcwd() + '/items_out.csv', g_items_column, g_items)
+        
+        transactions = expandOutfitIds()
+        writeListToCSV(os.getcwd() + '/transactions.csv', transactions)
 
     except:
         #keyboard interrupt
